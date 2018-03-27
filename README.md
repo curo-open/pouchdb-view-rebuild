@@ -8,3 +8,7 @@ export DB_RESULT_ROOT=/tmp/pdb-db-test
 
 mocha --ui bdd  --timeout 100000
 ```
+
+## TODO
+
+* support `reduce`
