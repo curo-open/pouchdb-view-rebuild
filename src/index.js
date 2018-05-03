@@ -522,7 +522,7 @@ class Builder {
     // let fn = '/tmp/x.js'
     // fs.writeFileSync(fn, 'module.exports = ' + str)
     // let func= require(fn)
-    return typeof str === 'string' ? new Function('doc', str.substr(13)) : str
+    return typeof str === 'string' ? new Function('doc', str.substr(str.indexOf('{'))) : str
   }
 
   _stringify (fun) {
