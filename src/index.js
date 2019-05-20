@@ -1,4 +1,5 @@
 const fs = require('fs-extra')
+const path = require('path')
 const crypto = require('crypto')
 const temporary = false // only to keep depDbName similar as possible to original
 const debug = require('debug')('pouchdb:build-view')
@@ -14,12 +15,13 @@ class Builder {
     this.views = views
     this.chunkSizeRead = opts.chunkSizeRead || 200
     this.chunkSizeWrite = opts.chunkSizeWrite || 50
+    this.forceRebuild = opts.forceRebuild || false
   }
 
-  async build (clean = false) {
+  async build () {
     // clean up views if needed
-    if (clean) {
-      await this.cleanViews(clean)
+    if (this.forceRebuild) {
+      await this.dropViews(drop)
     }
 
     let [views, viewsStr] = this._normalizeViews(this.views)
@@ -33,10 +35,13 @@ class Builder {
 
     let targets = []
     let depViews = {}
+    let shouldExists = new Set()
     for (let i = 0; i < viewsStr.length; i++) {
       let idx = viewsStr[i]
       for (let viewName in idx.views) {
-        if (!idx.views.hasOwnProperty(viewName)) continue
+        if (!idx.views.hasOwnProperty(viewName)) {
+          continue
+        }
         let v = idx.views[viewName]
 
         // generate dependent db name
@@ -47,10 +52,20 @@ class Builder {
         if (fullViewName.indexOf('/') === -1) {
           fullViewName = viewName + '/' + viewName
         }
-        depViews[fullViewName] = {[depDbName]: true}
+        depViews[fullViewName] = { [depDbName]: true }
 
-        // remove dependent db if already exists
-        fs.removeSync(depDbName)
+        if (!this.forceRebuild) {
+          // remeber that it should not be cleaned later
+          shouldExists.add(path.basename(depDbName))
+          // decide if needs to be rebuilded
+          if (fs.existsSync(depDbName)) {
+            // no need to rebuild this view
+            continue
+          }
+        } else {
+          // remove dependent db if already exists
+          fs.removeSync(depDbName)
+        }
 
         // register dependent db
         let res$$1 = await this.db.registerDependentDatabase(depDbName)
@@ -60,95 +75,113 @@ class Builder {
         targets.push(v)
       }
     }
-    // put dependent view doc
-    try {
-      await this.upsert(this.db, {_id: '_local/' + localDocName, views: depViews})
-    } catch (err) {
-      throw new Error(`Error when putting dependent views doc: ${err}`)
-    }
 
-    // get all IDs
-    debug('get all IDs to process')
-    let data = await this.db.allDocs({})
-    let j = data.rows.length
-    debug('%d docs ready', j)
+    if (targets.length) {
+      // put dependent view doc
+      try {
+        await this.upsert(this.db, { _id: '_local/' + localDocName, views: depViews })
+      } catch (err) {
+        throw new Error(`Error when putting dependent views doc: ${err}`)
+      }
 
-    // receive real documents in reasonable amount, not to overload memory
-    for (let i = 0; i < j; i += this.chunkSizeRead) {
-      let subset = data.rows.slice(i, i + this.chunkSizeRead).map(d => d.id)
-      let docs = await this.db.allDocs({
-        include_docs: true,
-        keys: subset
-      })
+      // get all IDs
+      debug('get all IDs to process')
+      let data = await this.db.allDocs({})
+      let j = data.rows.length
+      debug('%d docs ready', j)
 
-      // store the data before next chunk will be loaded
-      let jj = docs.rows.length
-      for (let ii = 0; ii < jj; ii += this.chunkSizeWrite) {
-        // clear targets
-        targets.forEach(t => {
-          t.docs = []
+      // receive real documents in reasonable amount, not to overload memory
+      for (let i = 0; i < j; i += this.chunkSizeRead) {
+        let subset = data.rows.slice(i, i + this.chunkSizeRead).map(d => d.id)
+        let docs = await this.db.allDocs({
+          include_docs: true,
+          keys: subset
         })
 
-        for (let d of docs.rows.slice(ii, ii + this.chunkSizeWrite)) {
-          // ignore some records
-          if (d.error || d.deleted || d.doc._id[0] === '_') continue
+        // store the data before next chunk will be loaded
+        let jj = docs.rows.length
+        for (let ii = 0; ii < jj; ii += this.chunkSizeWrite) {
+          // clear targets
+          targets.forEach(t => {
+            t.docs = []
+          })
 
-          // evaluate views
-          for (let t of targets) {
-            // evaluate map
-            mapResults = []
-            doc = d.doc
-            try {
-              t.map(doc, emit)
-            } catch (err) {
-              // TODO
-              throw err
-            }
+          for (let d of docs.rows.slice(ii, ii + this.chunkSizeWrite)) {
+            // ignore some records
+            if (d.error || d.deleted || d.doc._id[0] === '_') continue
 
-            // TODO: evaluate reduce
+            // evaluate views
+            for (let t of targets) {
+              // evaluate map
+              mapResults = []
+              doc = d.doc
+              try {
+                t.map(doc, emit)
+              } catch (err) {
+                // TODO
+                throw err
+              }
 
-            // get documents
-            let docsToPersist = await this.getDocsToPersist(doc._id, t, this.createIndexableKeysToKeyValues(mapResults))
+              // TODO: evaluate reduce
 
-            if (docsToPersist.length) {
-              t.docs = t.docs.concat(docsToPersist) // accumulate for writes
+              // get documents
+              let docsToPersist = await this.getDocsToPersist(doc._id, t, this.createIndexableKeysToKeyValues(mapResults))
+
+              if (docsToPersist.length) {
+                t.docs = t.docs.concat(docsToPersist) // accumulate for writes
+              }
             }
           }
-        }
 
-        // construct array of promises
-        let writes = targets
-          .filter(t => t.docs.length)
-          .map(t => t.db.bulkDocs({docs: t.docs}))
+          // construct array of promises
+          let writes = targets
+            .filter(t => t.docs.length)
+            .map(t => t.db.bulkDocs({ docs: t.docs }))
 
-        // write to all views
-        if (writes.length) {
-          await Promise.all(writes)
+          // write to all views
+          if (writes.length) {
+            await Promise.all(writes)
+          }
         }
       }
-    }
 
-    // write _local/lastSeq
-    let changes
-    try {
-      changes = await this.db.changes({
-        conflicts: true,
-        since: 0,
-        limit: 1,
-        descending: true
-      })
-    } catch (err) {
-      console.error('Error when calculating changes')
-      changes = {}
-    }
-    let lastSeq = changes.last_seq || j
-    await Promise.all(targets.map(t => t.db.bulkDocs({docs: [{_id: '_local/lastSeq', seq: lastSeq}]})))
-
-    // close all view dbs
-    for (let t of targets) {
+      // write _local/lastSeq
+      let changes
       try {
-        await t.db.close()
-      } catch (err) {}
+        changes = await this.db.changes({
+          conflicts: true,
+          since: 0,
+          limit: 1,
+          descending: true
+        })
+      } catch (err) {
+        console.error('Error when calculating changes')
+        changes = {}
+      }
+      let lastSeq = changes.last_seq || j
+      await Promise.all(targets.map(t => t.db.bulkDocs({ docs: [{ _id: '_local/lastSeq', seq: lastSeq }] })))
+
+      // close all view dbs
+      for (let t of targets) {
+        try {
+          await t.db.close()
+        } catch (err) {}
+      }
+    } else {
+      debug('no view needs rebuild')
+    }
+
+    let prefix = path.basename(this.db.name) + '-mrview-'
+    let dbpath = path.dirname(this.db.name)
+    debug('removing view files that are invalid and starting with prefix %s', prefix)
+    for (let name of fs.readdirSync(dbpath)) {
+      if (name.startsWith(prefix)) {
+        if (!shouldExists.has(name)) {
+          let fn = path.join(dbpath, name)
+          debug('leftover view: %s', fn)
+          fs.removeSync(fn)
+        }
+      }
     }
 
     debug('view build finished')
@@ -158,8 +191,8 @@ class Builder {
     let views = []
     let viewsStr = []
     for (let d of def) {
-      let index = {_id: d._id, views: {}}
-      let indexStr = {_id: d._id, views: {}}
+      let index = { _id: d._id, views: {} }
+      let indexStr = { _id: d._id, views: {} }
       for (let v in d.views) {
         if (!d.views.hasOwnProperty(v)) continue
         index.views[v] = index.views[v] || {}
@@ -177,7 +210,7 @@ class Builder {
     return [views, viewsStr]
   }
 
-  async cleanViews () {
+  async dropViews () {
     let res = await this.db.allDocs({
       include_docs: true,
       // attachments: true,
@@ -210,8 +243,7 @@ class Builder {
   }
 
   async getDepDbName (v) {
-    let info = await this.db.info()
-    return info.db_name + '-mrview-' + (temporary ? 'temp' : this.stringMd5(this.createViewSignature(v.map, v.reduce)))
+    return this.db.name + '-mrview-' + (temporary ? 'temp' : this.stringMd5(this.createViewSignature(v.map, v.reduce)))
   }
 
   /** FOLLOWING FUNCTIONS ARE COPIED FROM POUCHDB SOURCE **/
@@ -244,7 +276,7 @@ class Builder {
 
   getDocsToPersist (docId, view, indexableKeysToKeyValues) {
     let metaDocId = '_local/doc_' + docId
-    let defaultMetaDoc = {_id: metaDocId, keys: []}
+    let defaultMetaDoc = { _id: metaDocId, keys: [] }
 
     let processKeyValueDocs = (metaDoc) => {
       let kvDocs = []
@@ -530,6 +562,7 @@ class Builder {
   }
 
   async getCurrentViewDefinitions () {
+    let info = await this.db.info()
     let res = await this.db.allDocs({
       include_docs: true,
       // attachments: true,
@@ -538,17 +571,22 @@ class Builder {
     })
     let views = []
     res.rows.filter(r => {
-      views.push({_id: r.id, views: r.doc.views})
+      for (let v of Object.values(r.doc.views)) {
+        let viewFolderName = info.db_name + '-mrview-' + this.stringMd5(this.createViewSignature(v.map, v.reduce))
+        console.log(viewFolderName)
+        v._folder = viewFolderName
+      }
+      views.push({ _id: r.id, views: r.doc.views })
     })
 
     return views
   }
 
-  async getLoopbackViewDefinitions (def) {
+  static getLoopbackViewDefinitions (def) {
     let views = []
     for (let idx in def) {
       if (!def.hasOwnProperty(idx)) continue
-      views.push({_id: `_design/${idx}`, views: def[idx].views})
+      views.push({ _id: `_design/${idx}`, views: def[idx].views })
     }
     return views
   }
@@ -557,7 +595,7 @@ class Builder {
 let doc
 let mapResults
 emit = function (key, value) {
-  let output = {id: doc._id, key: b.normalizeKey(key)}
+  let output = { id: doc._id, key: b.normalizeKey(key) }
   // Don't explicitly store the value unless it's defined and non-null.
   // This saves on storage space, because often people don't use it.
   if (typeof value !== 'undefined' && value !== null) {
@@ -567,9 +605,9 @@ emit = function (key, value) {
 }
 
 let b
-module.exports = async function (db, views = true, opts = {chunkSizeRead: 200, chunkSizeWrite: 50}) {
+
+async function Main (db, views = true, opts = { chunkSizeRead: 200, chunkSizeWrite: 50, forceRebuild: false }) {
   b = new Builder(db, views, opts)
-  let clean = false
   if (views === false) {
     // only return views
     return b.getCurrentViewDefinitions()
@@ -578,11 +616,14 @@ module.exports = async function (db, views = true, opts = {chunkSizeRead: 200, c
     b.views = await b.getCurrentViewDefinitions()
   } else if (!Array.isArray(views)) {
     // this is loopback structure
-    b.views = await b.getLoopbackViewDefinitions(views)
-    clean = true
+    b.views = await Builder.getLoopbackViewDefinitions(views)
+  } else {
+    b.views = views
   }
-  return b.build(clean)
+  return b.build()
 }
+
+Main.getLoopbackViewDefinitions = Builder.getLoopbackViewDefinitions
 
 // ddocValidator
 // checkQueryParseError
@@ -590,3 +631,5 @@ module.exports = async function (db, views = true, opts = {chunkSizeRead: 200, c
 // !!! updateViewInQueue
 // !!! registerDependentDatabase
 // processBatch
+
+module.exports = Main
