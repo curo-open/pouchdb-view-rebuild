@@ -43,6 +43,10 @@ class Builder {
           continue
         }
         let v = idx.views[viewName]
+        if (v._ignoreRebuild) {
+          // see addFilterData()
+          continue
+        }
 
         // generate dependent db name
         let depDbName = await this.getDepDbName(v)
@@ -590,6 +594,40 @@ class Builder {
     }
     return views
   }
+
+  async addFilterData (views, filter = false) {
+    // get last data sequence
+    let lastSeq = await this.db.changes({
+      conflicts: true,
+      since: 0,
+      limit: 1,
+      descending: true
+    })
+    lastSeq = lastSeq.last_seq
+
+    for (let designDoc of views) {
+      for (let [name, view] of Object.entries(designDoc.views)) {
+        // generate dependent db name
+        let depDbName = await this.getDepDbName(view)
+        let depDB = new this.db.constructor(depDbName/*require('path').basename(depDbName)*/, this.db.__opts)
+        let viewSeq
+        try {
+          viewSeq = await depDB.get('_local/lastSeq')
+          viewSeq = viewSeq.seq
+        } catch (ex) {
+          viewSeq = 0
+        }
+        view._seqInfo = { lastSeq, viewSeq }
+        if (filter) {
+          if (!filter(view, name, designDoc._id)) {
+            view._ignoreRebuild = true
+          }
+        }
+      }
+    }
+
+    return views
+  }
 }
 
 let doc
@@ -606,11 +644,15 @@ emit = function (key, value) {
 
 let b
 
-async function Main (db, views = true, opts = { chunkSizeRead: 200, chunkSizeWrite: 50, forceRebuild: false }) {
+async function Main (db, views = true, opts = { chunkSizeRead: 200, chunkSizeWrite: 50, forceRebuild: false, filter: false }) {
   b = new Builder(db, views, opts)
   if (views === false) {
     // only return views
-    return b.getCurrentViewDefinitions()
+    if (opts.filter) {
+      return await b.addFilterData(await b.getCurrentViewDefinitions(), opts.filter)
+    } else {
+      return b.getCurrentViewDefinitions()
+    }
   } else if (views === true) {
     // rebuild views defined in database
     b.views = await b.getCurrentViewDefinitions()
@@ -620,6 +662,11 @@ async function Main (db, views = true, opts = { chunkSizeRead: 200, chunkSizeWri
   } else {
     b.views = views
   }
+
+  if (opts.filter) {
+    b.views = await b.addFilterData(b.views, opts.filter)
+  }
+
   return b.build()
 }
 
