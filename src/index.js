@@ -21,7 +21,7 @@ class Builder {
   async build () {
     // clean up views if needed
     if (this.forceRebuild) {
-      await this.dropViews(drop)
+      await this.dropViews()
     }
 
     let [views, viewsStr] = this._normalizeViews(this.views)
