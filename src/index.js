@@ -58,9 +58,10 @@ class Builder {
         }
         depViews[fullViewName] = { [depDbName]: true }
 
+        // remeber that it should not be cleaned later
+        shouldExists.add(path.basename(depDbName))
+
         if (!this.forceRebuild) {
-          // remeber that it should not be cleaned later
-          shouldExists.add(path.basename(depDbName))
           // decide if needs to be rebuilded
           if (fs.existsSync(depDbName)) {
             // no need to rebuild this view
