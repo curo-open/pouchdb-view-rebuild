@@ -578,7 +578,6 @@ class Builder {
     res.rows.filter(r => {
       for (let v of Object.values(r.doc.views)) {
         let viewFolderName = info.db_name + '-mrview-' + this.stringMd5(this.createViewSignature(v.map, v.reduce))
-        console.log(viewFolderName)
         v._folder = viewFolderName
       }
       views.push({ _id: r.id, views: r.doc.views })
