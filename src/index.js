@@ -609,6 +609,8 @@ class Builder {
       for (let [name, view] of Object.entries(designDoc.views)) {
         // generate dependent db name
         let depDbName = await this.getDepDbName(view)
+
+        // learn about lastSeq value if available
         let depDB = new this.db.constructor(depDbName/*require('path').basename(depDbName)*/, this.db.__opts)
         let viewSeq
         try {
@@ -617,6 +619,11 @@ class Builder {
         } catch (ex) {
           viewSeq = 0
         }
+
+        // we need to close the db, maybe it will be destroyed later by forceRebuild
+        await depDB.close()
+
+        // remember discovered informations about the view
         view._seqInfo = { lastSeq, viewSeq }
         if (filter) {
           if (!filter(view, name, designDoc._id)) {
