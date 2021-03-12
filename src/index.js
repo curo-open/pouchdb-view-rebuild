@@ -73,7 +73,7 @@ class Builder {
         }
 
         // register dependent db
-        let res$$1 = await this.db.registerDependentDatabase(depDbName)
+        let res$$1 = await this.db.registerDependentDatabase(this.unprefixedDbName(depDbName))
         v.db = res$$1.db
         v.db.auto_compaction = true
         v.map = views[i].views[viewName].map
@@ -176,8 +176,9 @@ class Builder {
       debug('no view needs rebuild')
     }
 
-    let prefix = path.basename(this.db.name) + '-mrview-'
-    let dbpath = path.dirname(this.db.name)
+    let prefixedDbName = (this.db.__opts.prefix || '') + this.db.name
+    let prefix = path.basename(prefixedDbName) + '-mrview-'
+    let dbpath = path.dirname(prefixedDbName)
     debug('removing view files that are invalid and starting with prefix %s', prefix)
     for (let name of fs.readdirSync(dbpath)) {
       if (name.startsWith(prefix)) {
@@ -248,7 +249,11 @@ class Builder {
   }
 
   async getDepDbName (v) {
-    return this.db.name + '-mrview-' + (temporary ? 'temp' : this.stringMd5(this.createViewSignature(v.map, v.reduce)))
+    return (this.db.__opts.prefix || '') + this.db.name + '-mrview-' + (temporary ? 'temp' : this.stringMd5(this.createViewSignature(v.map, v.reduce)))
+  }
+
+  unprefixedDbName (dbName) {
+    return this.db.__opts.prefix ?  dbName.replace(new RegExp('^' + this.db.__opts.prefix), '') : dbName
   }
 
   /** FOLLOWING FUNCTIONS ARE COPIED FROM POUCHDB SOURCE **/
@@ -611,7 +616,7 @@ class Builder {
         let depDbName = await this.getDepDbName(view)
 
         // learn about lastSeq value if available
-        let depDB = new this.db.constructor(depDbName/*require('path').basename(depDbName)*/, this.db.__opts)
+        let depDB = new this.db.constructor(this.unprefixedDbName(depDbName), this.db.__opts)
         let viewSeq
         try {
           viewSeq = await depDB.get('_local/lastSeq')
