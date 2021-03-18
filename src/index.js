@@ -253,7 +253,13 @@ class Builder {
   }
 
   unprefixedDbName (dbName) {
-    return this.db.__opts.prefix ?  dbName.replace(new RegExp('^' + this.db.__opts.prefix), '') : dbName
+    if (this.db.__opts.prefix) {
+      if (dbName.startsWith(this.db.__opts.prefix)) {
+        return dbName.substr(this.db.__opts.prefix.length)
+      }
+    }
+
+    return dbName
   }
 
   /** FOLLOWING FUNCTIONS ARE COPIED FROM POUCHDB SOURCE **/
@@ -582,8 +588,7 @@ class Builder {
     let views = []
     res.rows.filter(r => {
       for (let v of Object.values(r.doc.views)) {
-        let viewFolderName = info.db_name + '-mrview-' + this.stringMd5(this.createViewSignature(v.map, v.reduce))
-        v._folder = viewFolderName
+        v._folder = info.db_name + '-mrview-' + this.stringMd5(this.createViewSignature(v.map, v.reduce))
       }
       views.push({ _id: r.id, views: r.doc.views })
     })
