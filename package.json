@@ -1,6 +1,6 @@
 {
   "name": "pouchdb-view-rebuild",
-  "version": "0.0.2",
+  "version": "0.9.1",
   "main": "src/index.js",
   "repository": "https://github.com/curo-open/pouchdb-view-rebuild",
   "license": "Apache-2.0",
