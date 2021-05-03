@@ -586,7 +586,8 @@ class Builder {
       endkey: '_design/' + '\uffff'
     })
     let views = []
-    res.rows.filter(r => {
+    res.rows.forEach(r => {
+      if (!(r && r.doc && r.doc.views)) return
       for (let v of Object.values(r.doc.views)) {
         v._folder = info.db_name + '-mrview-' + this.stringMd5(this.createViewSignature(v.map, v.reduce))
       }
